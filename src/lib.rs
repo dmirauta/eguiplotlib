@@ -1,4 +1,4 @@
-use egui::{CentralPanel, Context, ScrollArea};
+use egui::{Context, ScrollArea};
 use egui_inspect::EguiInspect;
 use egui_plot::{Line, PlotPoints};
 use pyo3::{
@@ -7,6 +7,7 @@ use pyo3::{
     types::{PyInt, PyList},
 };
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     thread::{spawn, JoinHandle},
 };
@@ -35,7 +36,7 @@ impl EguiInspect for Plot {
 }
 
 impl Plot {
-    fn _set_line(&mut self, i: usize, x: Bound<'_, PyAny>, y: Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_line(&mut self, i: usize, x: Bound<'_, PyAny>, y: Bound<'_, PyAny>) -> PyResult<()> {
         let x = x.downcast::<PyList>()?;
         let y = y.downcast::<PyList>()?;
         let xy_data = x
@@ -62,19 +63,8 @@ impl Plot {
         }
     }
 
-    #[allow(dead_code)]
-    fn set_line(
-        &mut self,
-        i: Bound<'_, PyAny>,
-        x: Bound<'_, PyAny>,
-        y: Bound<'_, PyAny>,
-    ) -> PyResult<()> {
-        let i: usize = i.downcast::<PyInt>()?.extract()?;
-        self._set_line(i, x, y)
-    }
-
     fn add_line(&mut self, x: Bound<'_, PyAny>, y: Bound<'_, PyAny>) -> PyResult<()> {
-        self._set_line(self.line_data.len(), x, y)
+        self.set_line(self.line_data.len(), x, y)
     }
 }
 
@@ -136,19 +126,21 @@ impl EguiInspect for Figure {
     }
 }
 
-struct PlotWindow {
-    fig: Arc<Mutex<Figure>>,
+struct PlotsWindow {
+    figs: Arc<Mutex<HashMap<String, Figure>>>,
 }
 
-impl run_native::App for PlotWindow {
+impl run_native::App for PlotsWindow {
     fn update(&mut self, ctx: &Context) {
-        if let Ok(mut fig) = self.fig.try_lock() {
-            CentralPanel::default().show(ctx, |ui| {
-                let r = ScrollArea::both().show(ui, |ui| {
-                    fig.inspect_mut("", ui);
+        if let Ok(mut figs) = self.figs.try_lock() {
+            for (name, fig) in figs.iter_mut() {
+                egui::Window::new(name).show(ctx, |ui| {
+                    let r = ScrollArea::both().show(ui, |ui| {
+                        fig.inspect_mut("", ui);
+                    });
+                    fig.split_height(r.inner_rect.height());
                 });
-                fig.split_height(r.inner_rect.height());
-            });
+            }
         }
     }
 }
@@ -156,44 +148,82 @@ impl run_native::App for PlotWindow {
 #[pymodule]
 mod pyegui {
 
+    use pyo3::types::PyString;
+
     use self::run_native::run_native;
 
     use super::*;
 
     #[pyclass]
-    struct EguiFigure {
+    struct EguiCanvas {
         join_handle: JoinHandle<()>,
-        fig: Arc<Mutex<Figure>>,
+        figs: Arc<Mutex<HashMap<String, Figure>>>,
     }
 
     #[pymethods]
-    impl EguiFigure {
+    impl EguiCanvas {
         #[new]
-        fn new(n: Bound<'_, PyAny>, m: Bound<'_, PyAny>) -> PyResult<Self> {
-            let n: usize = n.downcast::<PyInt>()?.extract()?;
-            let m: usize = m.downcast::<PyInt>()?.extract()?;
-            let fig = Arc::new(Mutex::new(Figure::new(n, m)));
-            let _fig = fig.clone();
+        fn new() -> PyResult<Self> {
+            let figs = Arc::new(Mutex::new(HashMap::new()));
+            let _figs = figs.clone();
             let join_handle =
-                spawn(move || run_native("Egui figure", Box::new(PlotWindow { fig: _fig })));
-            Ok(Self { join_handle, fig })
+                spawn(move || run_native("Egui canvas", Box::new(PlotsWindow { figs: _figs })));
+            Ok(Self { join_handle, figs })
         }
 
         fn is_running(self_: PyRef<'_, Self>) -> bool {
             !self_.join_handle.is_finished()
         }
 
+        fn add_figure(
+            self_: PyRef<'_, Self>,
+            s: Bound<'_, PyAny>,
+            n: Bound<'_, PyAny>,
+            m: Bound<'_, PyAny>,
+        ) -> PyResult<()> {
+            let s: String = s.downcast::<PyString>()?.extract()?;
+            let n: usize = n.downcast::<PyInt>()?.extract()?;
+            let m: usize = m.downcast::<PyInt>()?.extract()?;
+            let mut figs = self_.figs.lock().unwrap();
+            let fig = Figure::new(n, m);
+            figs.insert(s, fig);
+            Ok(())
+        }
+
         fn add_line(
             self_: PyRef<'_, Self>,
+            s: Bound<'_, PyAny>,
             i: Bound<'_, PyAny>,
             j: Bound<'_, PyAny>,
             x: Bound<'_, PyAny>,
             y: Bound<'_, PyAny>,
         ) -> PyResult<()> {
+            let s: String = s.downcast::<PyString>()?.extract()?;
             let i: usize = i.downcast::<PyInt>()?.extract()?;
             let j: usize = j.downcast::<PyInt>()?.extract()?;
-            let mut fig = self_.fig.lock().unwrap();
-            fig.plot_rows[i].plots[j].add_line(x, y)
+            let mut figs = self_.figs.lock().unwrap();
+            match figs.get_mut(&s) {
+                Some(fig) => {
+                    let n = fig.plot_rows.len();
+                    let pr = fig
+                        .plot_rows
+                        .get_mut(i)
+                        .ok_or(PyErr::new::<PyIndexError, _>(format!(
+                            "Index {i} invalid for rows {n}.",
+                        )))?;
+                    let m = pr.plots.len();
+                    let p = pr
+                        .plots
+                        .get_mut(j)
+                        .ok_or(PyErr::new::<PyIndexError, _>(format!(
+                            "Index {j} invalid for {m} plots in row.",
+                        )))?;
+                    p.add_line(x, y)
+                }
+                None => Err(PyErr::new::<PyIndexError, _>(format!(
+                    "No figure with key \"{s}\".",
+                ))),
+            }
         }
     }
 }
