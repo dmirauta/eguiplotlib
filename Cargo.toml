@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.21.2", features = ["experimental-declarative-modules"] }
 egui = "0.27"
+egui_inspect = { git = "https://github.com/dmirauta/egui_inspect" }
 egui_sdl2_gl = { version = "0.27.0", features = ["use_epi"] }
 ahash = "~0.8"
 gl = "~0.14"
