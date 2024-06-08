@@ -1,270 +1,148 @@
-use std::num::NonZeroU32;
+use egui::ViewportId;
+use egui_backend::{
+    egui::{self, FullOutput},
+    epi::{Frame, IntegrationInfo},
+    get_frame_time, gl, sdl2,
+    sdl2::event::Event,
+    sdl2::video::GLProfile,
+    sdl2::video::SwapInterval,
+    DpiScaling, ShaderVersion, Signal,
+};
+use epi::backend::FrameData;
+use std::{sync::Arc, time::Instant};
+// Alias the backend to something less mouthful
+use egui_sdl2_gl as egui_backend;
+const SCREEN_WIDTH: u32 = 800;
+const SCREEN_HEIGHT: u32 = 600;
 
-use egui_winit::winit::{self, platform::wayland::EventLoopBuilderExtWayland};
-
-/// The majority of `GlutinWindowContext` is taken from `eframe`
-struct GlutinWindowContext {
-    window: winit::window::Window,
-    gl_context: glutin::context::PossiblyCurrentContext,
-    gl_display: glutin::display::Display,
-    gl_surface: glutin::surface::Surface<glutin::surface::WindowSurface>,
+pub trait App {
+    fn update(&mut self, ctx: &egui::Context);
 }
 
-impl GlutinWindowContext {
-    // refactor this function to use `glutin-winit` crate eventually.
-    // preferably add android support at the same time.
-    #[allow(unsafe_code)]
-    unsafe fn new(event_loop: &winit::event_loop::EventLoopWindowTarget<UserEvent>) -> Self {
-        use glutin::context::NotCurrentGlContext;
-        use glutin::display::GetGlDisplay;
-        use glutin::display::GlDisplay;
-        use glutin::prelude::GlSurface;
-        use rwh_05::HasRawWindowHandle;
-        let winit_window_builder = winit::window::WindowBuilder::new()
-            .with_resizable(true)
-            .with_inner_size(winit::dpi::LogicalSize {
-                width: 800.0,
-                height: 600.0,
-            })
-            .with_title("egui_glow example") // Keep hidden until we've painted something. See https://github.com/emilk/egui/pull/2279
-            .with_visible(false);
+pub fn run_native(name: &str, mut app: Box<dyn App>) {
+    let sdl_context = sdl2::init().unwrap();
+    let video_subsystem = sdl_context.video().unwrap();
+    let gl_attr = video_subsystem.gl_attr();
+    gl_attr.set_context_profile(GLProfile::Core);
+    // Let OpenGL know we are dealing with SRGB colors so that it
+    // can do the blending correctly. Not setting the framebuffer
+    // leads to darkened, oversaturated colors.
+    gl_attr.set_framebuffer_srgb_compatible(true);
+    gl_attr.set_double_buffer(true);
+    gl_attr.set_multisample_samples(4);
 
-        let config_template_builder = glutin::config::ConfigTemplateBuilder::new()
-            .prefer_hardware_accelerated(None)
-            .with_depth_size(0)
-            .with_stencil_size(0)
-            .with_transparency(false);
+    // OpenGL 3.2 is the minimum that we will support.
+    gl_attr.set_context_version(3, 2);
 
-        // log::debug!("trying to get gl_config");
-        let (mut window, gl_config) =
-            glutin_winit::DisplayBuilder::new() // let glutin-winit helper crate handle the complex parts of opengl context creation
-                .with_preference(glutin_winit::ApiPreference::FallbackEgl) // https://github.com/emilk/egui/issues/2520#issuecomment-1367841150
-                .with_window_builder(Some(winit_window_builder.clone()))
-                .build(
-                    event_loop,
-                    config_template_builder,
-                    |mut config_iterator| {
-                        config_iterator.next().expect(
-                            "failed to find a matching configuration for creating glutin config",
-                        )
-                    },
-                )
-                .expect("failed to create gl_config");
-        let gl_display = gl_config.display();
-        // log::debug!("found gl_config: {:?}", &gl_config);
+    let window = video_subsystem
+        .window(name, SCREEN_WIDTH, SCREEN_HEIGHT)
+        .opengl()
+        .resizable()
+        .build()
+        .unwrap();
 
-        let raw_window_handle = window.as_ref().map(|w| w.raw_window_handle());
-        // log::debug!("raw window handle: {:?}", raw_window_handle);
-        let context_attributes =
-            glutin::context::ContextAttributesBuilder::new().build(raw_window_handle);
-        // by default, glutin will try to create a core opengl context. but, if it is not available, try to create a gl-es context using this fallback attributes
-        let fallback_context_attributes = glutin::context::ContextAttributesBuilder::new()
-            .with_context_api(glutin::context::ContextApi::Gles(None))
-            .build(raw_window_handle);
-        let not_current_gl_context = unsafe {
-            gl_display
-                .create_context(&gl_config, &context_attributes)
-                .unwrap_or_else(|_| {
-                    // log::debug!("failed to create gl_context with attributes: {:?}. retrying with fallback context attributes: {:?}",
-                    //     &context_attributes,
-                    //     &fallback_context_attributes);
-                    gl_config
-                        .display()
-                        .create_context(&gl_config, &fallback_context_attributes)
-                        .expect("failed to create context even with fallback attributes")
-                })
-        };
+    // Create a window context
+    let _ctx = window.gl_create_context().unwrap();
+    debug_assert_eq!(gl_attr.context_profile(), GLProfile::Core);
+    debug_assert_eq!(gl_attr.context_version(), (3, 2));
 
-        // this is where the window is created, if it has not been created while searching for suitable gl_config
-        let window = window.take().unwrap_or_else(|| {
-            // log::debug!("window doesn't exist yet. creating one now with finalize_window");
-            glutin_winit::finalize_window(event_loop, winit_window_builder.clone(), &gl_config)
-                .expect("failed to finalize glutin window")
-        });
-        let (width, height): (u32, u32) = window.inner_size().into();
-        let width = NonZeroU32::new(width).unwrap_or(NonZeroU32::MIN);
-        let height = NonZeroU32::new(height).unwrap_or(NonZeroU32::MIN);
-        let surface_attributes =
-            glutin::surface::SurfaceAttributesBuilder::<glutin::surface::WindowSurface>::new()
-                .build(window.raw_window_handle(), width, height);
-        // log::debug!(
-        //     "creating surface with attributes: {:?}",
-        //     &surface_attributes
-        // );
-        let gl_surface = unsafe {
-            gl_display
-                .create_window_surface(&gl_config, &surface_attributes)
-                .unwrap()
-        };
-        // log::debug!("surface created successfully: {gl_surface:?}.making context current");
-        let gl_context = not_current_gl_context.make_current(&gl_surface).unwrap();
-
-        gl_surface
-            .set_swap_interval(
-                &gl_context,
-                glutin::surface::SwapInterval::Wait(NonZeroU32::MIN),
-            )
-            .unwrap();
-
-        Self {
-            window,
-            gl_context,
-            gl_display,
-            gl_surface,
-        }
-    }
-
-    fn window(&self) -> &winit::window::Window {
-        &self.window
-    }
-
-    fn resize(&self, physical_size: winit::dpi::PhysicalSize<u32>) {
-        use glutin::surface::GlSurface;
-        self.gl_surface.resize(
-            &self.gl_context,
-            physical_size.width.try_into().unwrap(),
-            physical_size.height.try_into().unwrap(),
+    // Enable vsync
+    if let Err(error) = window.subsystem().gl_set_swap_interval(SwapInterval::VSync) {
+        println!(
+            "Failed to gl_set_swap_interval(SwapInterval::VSync): {}",
+            error
         );
     }
 
-    fn swap_buffers(&self) -> glutin::error::Result<()> {
-        use glutin::surface::GlSurface;
-        self.gl_surface.swap_buffers(&self.gl_context)
-    }
+    // Init egui stuff
+    let (mut painter, mut egui_state) =
+        egui_backend::with_sdl2(&window, ShaderVersion::Default, DpiScaling::Default);
+    let egui_ctx = egui::Context::default();
+    let mut event_pump = sdl_context.event_pump().unwrap();
+    let start_time = Instant::now();
+    let repaint_signal = Arc::new(Signal::default());
 
-    fn get_proc_address(&self, addr: &std::ffi::CStr) -> *const std::ffi::c_void {
-        use glutin::display::GlDisplay;
-        self.gl_display.get_proc_address(addr)
-    }
-}
-
-#[derive(Debug)]
-pub enum UserEvent {
-    Redraw(std::time::Duration),
-}
-
-pub trait WinitGlowApp {
-    fn update(&mut self, egui_ctx: &egui::Context, quit: &mut bool);
-}
-
-pub fn run_native(mut app: Box<dyn WinitGlowApp>) {
-    let clear_color = [0.1, 0.1, 0.1];
-
-    let event_loop = winit::event_loop::EventLoopBuilder::<UserEvent>::with_user_event()
-        .with_any_thread(true)
-        .build()
-        .unwrap();
-    let (gl_window, gl) = create_display(&event_loop);
-    let gl = std::sync::Arc::new(gl);
-
-    let mut egui_glow = egui_glow::EguiGlow::new(&event_loop, gl.clone(), None, None);
-
-    let event_loop_proxy = egui::mutex::Mutex::new(event_loop.create_proxy());
-    egui_glow
-        .egui_ctx
-        .set_request_repaint_callback(move |info| {
-            event_loop_proxy
-                .lock()
-                .send_event(UserEvent::Redraw(info.delay))
-                .expect("Cannot send event");
+    'running: loop {
+        egui_state.input.time = Some(start_time.elapsed().as_secs_f64());
+        egui_ctx.begin_frame(egui_state.input.take());
+        // Begin frame
+        let frame_time = get_frame_time(start_time);
+        let frame = Frame::new(FrameData {
+            info: IntegrationInfo {
+                web_info: None,
+                cpu_usage: Some(frame_time),
+                native_pixels_per_point: Some(egui_state.native_pixels_per_point),
+                prefer_dark_mode: None,
+                name: "egui + sdl2 + gl",
+            },
+            output: Default::default(),
+            repaint_signal: repaint_signal.clone(),
         });
 
-    let mut repaint_delay = std::time::Duration::MAX;
+        app.update(&egui_ctx);
 
-    let _ = event_loop.run(move |event, event_loop_window_target| {
-        let mut redraw = || {
-            let mut quit = false;
-
-            egui_glow.run(gl_window.window(), |egui_ctx| {
-                app.update(egui_ctx, &mut quit);
-            });
-
-            if quit {
-                event_loop_window_target.exit();
-            } else {
-                event_loop_window_target.set_control_flow(if repaint_delay.is_zero() {
-                    gl_window.window().request_redraw();
-                    winit::event_loop::ControlFlow::Poll
-                } else if let Some(repaint_after_instant) =
-                    std::time::Instant::now().checked_add(repaint_delay)
-                {
-                    winit::event_loop::ControlFlow::WaitUntil(repaint_after_instant)
-                } else {
-                    winit::event_loop::ControlFlow::Wait
-                });
-            }
-
-            {
-                unsafe {
-                    use glow::HasContext as _;
-                    gl.clear_color(clear_color[0], clear_color[1], clear_color[2], 1.0);
-                    gl.clear(glow::COLOR_BUFFER_BIT);
-                }
-
-                // draw things behind egui here
-
-                egui_glow.paint(gl_window.window());
-
-                // draw things on top of egui here
-
-                gl_window.swap_buffers().unwrap();
-                gl_window.window().set_visible(true);
-            }
-        };
-
-        match event {
-            winit::event::Event::WindowEvent { event, .. } => {
-                use winit::event::WindowEvent;
-                if matches!(event, WindowEvent::CloseRequested | WindowEvent::Destroyed) {
-                    event_loop_window_target.exit();
-                    return;
-                }
-
-                if matches!(event, WindowEvent::RedrawRequested) {
-                    redraw();
-                    return;
-                }
-
-                if let winit::event::WindowEvent::Resized(physical_size) = &event {
-                    gl_window.resize(*physical_size);
-                }
-
-                let event_response = egui_glow.on_window_event(gl_window.window(), &event);
-
-                if event_response.repaint {
-                    gl_window.window().request_redraw();
-                }
-            }
-
-            winit::event::Event::UserEvent(UserEvent::Redraw(delay)) => {
-                repaint_delay = delay;
-            }
-            winit::event::Event::LoopExiting => {
-                egui_glow.destroy();
-            }
-            winit::event::Event::NewEvents(winit::event::StartCause::ResumeTimeReached {
-                ..
-            }) => {
-                gl_window.window().request_redraw();
-            }
-
-            _ => (),
+        let FullOutput {
+            platform_output,
+            textures_delta,
+            shapes,
+            pixels_per_point,
+            viewport_output,
+        } = egui_ctx.end_frame();
+        // Process ouput
+        egui_state.process_output(&window, &platform_output);
+        // Quite if needed.
+        if frame.take_app_output().quit {
+            break 'running;
         }
-    });
-}
 
-fn create_display(
-    event_loop: &winit::event_loop::EventLoopWindowTarget<UserEvent>,
-) -> (GlutinWindowContext, glow::Context) {
-    let glutin_window_context = unsafe { GlutinWindowContext::new(event_loop) };
-    let gl = unsafe {
-        glow::Context::from_loader_function(|s| {
-            let s = std::ffi::CString::new(s)
-                .expect("failed to construct C string from string for gl proc address");
+        let repaint_after = viewport_output
+            .get(&ViewportId::ROOT)
+            .expect("Missing ViewportId::ROOT")
+            .repaint_delay;
 
-            glutin_window_context.get_proc_address(&s)
-        })
-    };
+        if !repaint_after.is_zero() {
+            // Reactive every 1 second.
+            if let Some(event) = event_pump.wait_event_timeout(1000) {
+                match event {
+                    Event::Quit { .. } => break 'running,
+                    _ => {
+                        // Process input event
+                        egui_state.process_input(&window, event, &mut painter);
+                    }
+                }
+            }
+        } else {
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit { .. } => break 'running,
+                    _ => {
+                        // Process input event
+                        egui_state.process_input(&window, event, &mut painter);
+                    }
+                }
+            }
+        }
 
-    (glutin_window_context, gl)
+        // For default dpi scaling only, Update window when the size of resized window is very small (to avoid egui::CentralPanel distortions).
+        // if egui_ctx.used_size() != painter.screen_rect.size() {
+        //     println!("resized.");
+        //     let _size = egui_ctx.used_size();
+        //     let (w, h) = (_size.x as u32, _size.y as u32);
+        //     window.set_size(w, h).unwrap();
+        // }
+
+        let paint_jobs = egui_ctx.tessellate(shapes, pixels_per_point);
+
+        // An example of how OpenGL can be used to draw custom stuff with egui
+        // overlaying it:
+        // First clear the background to something nice.
+        unsafe {
+            // Clear the screen to green
+            gl::ClearColor(0.3, 0.6, 0.3, 1.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+
+        painter.paint_jobs(None, textures_delta, paint_jobs);
+        window.gl_swap_window();
+    }
 }
