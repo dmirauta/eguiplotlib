@@ -155,13 +155,28 @@ mod pyegui {
     use super::*;
 
     #[pyclass]
-    struct EguiCanvas {
+    struct FigureCanvas {
         join_handle: JoinHandle<()>,
         figs: Arc<Mutex<HashMap<String, Figure>>>,
     }
 
+    #[pyclass]
+    struct FigHandle {
+        // TODO: These will keep figure data alive even when canvas is dropped, make weakrefs?
+        figs: Arc<Mutex<HashMap<String, Figure>>>,
+        figkey: String,
+    }
+
+    #[pyclass]
+    struct PlotHandle {
+        figs: Arc<Mutex<HashMap<String, Figure>>>,
+        figkey: String,
+        row: usize,
+        col: usize,
+    }
+
     #[pymethods]
-    impl EguiCanvas {
+    impl FigureCanvas {
         #[new]
         fn new() -> PyResult<Self> {
             let figs = Arc::new(Mutex::new(HashMap::new()));
@@ -180,30 +195,34 @@ mod pyegui {
             s: Bound<'_, PyAny>,
             n: Bound<'_, PyAny>,
             m: Bound<'_, PyAny>,
-        ) -> PyResult<()> {
+        ) -> PyResult<FigHandle> {
             let s: String = s.downcast::<PyString>()?.extract()?;
             let n: usize = n.downcast::<PyInt>()?.extract()?;
             let m: usize = m.downcast::<PyInt>()?.extract()?;
-            let mut figs = self_.figs.lock().unwrap();
-            let fig = Figure::new(n, m);
-            figs.insert(s, fig);
-            Ok(())
+            {
+                let mut figs = self_.figs.lock().unwrap();
+                let fig = Figure::new(n, m);
+                figs.insert(s.clone(), fig);
+            }
+            Ok(FigHandle {
+                figkey: s,
+                figs: self_.figs.clone(),
+            })
         }
+    }
 
-        fn add_line(
+    #[pymethods]
+    impl FigHandle {
+        fn plot(
             self_: PyRef<'_, Self>,
-            s: Bound<'_, PyAny>,
             i: Bound<'_, PyAny>,
             j: Bound<'_, PyAny>,
-            x: Bound<'_, PyAny>,
-            y: Bound<'_, PyAny>,
-        ) -> PyResult<()> {
-            let s: String = s.downcast::<PyString>()?.extract()?;
+        ) -> PyResult<PlotHandle> {
             let i: usize = i.downcast::<PyInt>()?.extract()?;
             let j: usize = j.downcast::<PyInt>()?.extract()?;
-            let mut figs = self_.figs.lock().unwrap();
-            match figs.get_mut(&s) {
-                Some(fig) => {
+            match self_.figs.lock() {
+                Ok(mut figs) => {
+                    let fig = figs.get_mut(&self_.figkey).unwrap();
                     let n = fig.plot_rows.len();
                     let pr = fig
                         .plot_rows
@@ -212,16 +231,42 @@ mod pyegui {
                             "Index {i} invalid for rows {n}.",
                         )))?;
                     let m = pr.plots.len();
-                    let p = pr
+                    let _ = pr
                         .plots
                         .get_mut(j)
                         .ok_or(PyErr::new::<PyIndexError, _>(format!(
                             "Index {j} invalid for {m} plots in row.",
                         )))?;
+                    Ok(PlotHandle {
+                        figs: self_.figs.clone(),
+                        figkey: self_.figkey.clone(),
+                        row: i,
+                        col: j,
+                    })
+                }
+                Err(_) => Err(PyErr::new::<PyIndexError, _>(format!(
+                    "Handle no longer valid.",
+                ))),
+            }
+        }
+    }
+
+    #[pymethods]
+    impl PlotHandle {
+        fn add_line(
+            self_: PyRef<'_, Self>,
+            x: Bound<'_, PyAny>,
+            y: Bound<'_, PyAny>,
+        ) -> PyResult<()> {
+            let mut figs = self_.figs.lock().unwrap();
+            match figs.get_mut(&self_.figkey) {
+                Some(fig) => {
+                    let p = &mut fig.plot_rows[self_.row].plots[self_.col];
                     p.add_line(x, y)
                 }
                 None => Err(PyErr::new::<PyIndexError, _>(format!(
-                    "No figure with key \"{s}\".",
+                    "No figure with key \"{}\", handle is old?",
+                    self_.figkey
                 ))),
             }
         }
