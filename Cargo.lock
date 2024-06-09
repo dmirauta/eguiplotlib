@@ -1100,6 +1100,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "eguiplotlib"
+version = "0.1.0"
+dependencies = [
+ "ahash 0.8.11",
+ "egui 0.27.2",
+ "egui_inspect",
+ "egui_plot",
+ "egui_sdl2_gl",
+ "epi",
+ "gl",
+ "memoffset 0.9.1",
+ "pyo3",
+ "sdl2",
+]
+
+[[package]]
 name = "emath"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2351,22 +2367,6 @@ name = "profiling"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43d84d1d7a6ac92673717f9f6d1518374ef257669c24ebc5ac25d5033828be58"
-
-[[package]]
-name = "pyegui"
-version = "0.1.0"
-dependencies = [
- "ahash 0.8.11",
- "egui 0.27.2",
- "egui_inspect",
- "egui_plot",
- "egui_sdl2_gl",
- "epi",
- "gl",
- "memoffset 0.9.1",
- "pyo3",
- "sdl2",
-]
 
 [[package]]
 name = "pyo3"

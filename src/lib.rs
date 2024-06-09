@@ -36,17 +36,7 @@ impl EguiInspect for Plot {
 }
 
 impl Plot {
-    fn set_line(&mut self, i: usize, x: Bound<'_, PyAny>, y: Bound<'_, PyAny>) -> PyResult<()> {
-        let x = x.downcast::<PyList>()?;
-        let y = y.downcast::<PyList>()?;
-        let xy_data = x
-            .iter()
-            .zip(y.iter())
-            .filter_map(|(xf, yf)| match (xf.extract(), yf.extract()) {
-                (Ok(x), Ok(y)) => Some([x, y]),
-                _ => None,
-            })
-            .collect();
+    fn set_line(&mut self, i: usize, xy_data: LineData) -> PyResult<()> {
         let n = self.line_data.len();
         match i > n {
             true => Err(PyErr::new::<PyIndexError, _>(format!(
@@ -63,8 +53,8 @@ impl Plot {
         }
     }
 
-    fn add_line(&mut self, x: Bound<'_, PyAny>, y: Bound<'_, PyAny>) -> PyResult<()> {
-        self.set_line(self.line_data.len(), x, y)
+    fn add_line(&mut self, xy_data: LineData) -> PyResult<()> {
+        self.set_line(self.line_data.len(), xy_data)
     }
 }
 
@@ -146,7 +136,7 @@ impl run_native::App for PlotsWindow {
 }
 
 #[pymodule]
-mod pyegui {
+mod eguiplotlib {
 
     use pyo3::types::PyString;
 
@@ -192,13 +182,13 @@ mod pyegui {
 
         fn add_figure(
             self_: PyRef<'_, Self>,
-            s: Bound<'_, PyAny>,
-            n: Bound<'_, PyAny>,
-            m: Bound<'_, PyAny>,
+            s: Bound<'_, PyString>,
+            n: Bound<'_, PyInt>,
+            m: Bound<'_, PyInt>,
         ) -> PyResult<FigHandle> {
-            let s: String = s.downcast::<PyString>()?.extract()?;
-            let n: usize = n.downcast::<PyInt>()?.extract()?;
-            let m: usize = m.downcast::<PyInt>()?.extract()?;
+            let s: String = s.extract()?;
+            let n: usize = n.extract()?;
+            let m: usize = m.extract()?;
             {
                 let mut figs = self_.figs.lock().unwrap();
                 let fig = Figure::new(n, m);
@@ -213,13 +203,14 @@ mod pyegui {
 
     #[pymethods]
     impl FigHandle {
+        /// Aquire a handle to the plot at grid coords (i, j).
         fn plot(
             self_: PyRef<'_, Self>,
-            i: Bound<'_, PyAny>,
-            j: Bound<'_, PyAny>,
+            i: Bound<'_, PyInt>,
+            j: Bound<'_, PyInt>,
         ) -> PyResult<PlotHandle> {
-            let i: usize = i.downcast::<PyInt>()?.extract()?;
-            let j: usize = j.downcast::<PyInt>()?.extract()?;
+            let i: usize = i.extract()?;
+            let j: usize = j.extract()?;
             match self_.figs.lock() {
                 Ok(mut figs) => {
                     let fig = figs.get_mut(&self_.figkey).unwrap();
@@ -255,20 +246,33 @@ mod pyegui {
     impl PlotHandle {
         fn add_line(
             self_: PyRef<'_, Self>,
-            x: Bound<'_, PyAny>,
-            y: Bound<'_, PyAny>,
+            x: Bound<'_, PyList>,
+            y: Bound<'_, PyList>,
         ) -> PyResult<()> {
-            let mut figs = self_.figs.lock().unwrap();
-            match figs.get_mut(&self_.figkey) {
-                Some(fig) => {
-                    let p = &mut fig.plot_rows[self_.row].plots[self_.col];
-                    p.add_line(x, y)
-                }
-                None => Err(PyErr::new::<PyIndexError, _>(format!(
-                    "No figure with key \"{}\", handle is old?",
-                    self_.figkey
+            let xy_data = x
+                .iter()
+                .zip(y.iter())
+                .filter_map(|(xf, yf)| match (xf.extract(), yf.extract()) {
+                    (Ok(x), Ok(y)) => Some([x, y]),
+                    _ => None,
+                })
+                .collect();
+            match self_.figs.lock() {
+                Ok(mut figs) => match figs.get_mut(&self_.figkey) {
+                    Some(fig) => {
+                        let p = &mut fig.plot_rows[self_.row].plots[self_.col];
+                        p.add_line(xy_data)
+                    }
+                    None => Err(PyErr::new::<PyIndexError, _>(format!(
+                        "No figure with key \"{}\", handle is old?",
+                        self_.figkey
+                    ))),
+                },
+                Err(_) => Err(PyErr::new::<PyIndexError, _>(format!(
+                    "Handle no longer valid.",
                 ))),
             }
+            // TODO: Signal request repaint on modification?
         }
     }
 }

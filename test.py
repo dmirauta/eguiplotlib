@@ -1,8 +1,8 @@
 import math
 
-import pyegui
+import eguiplotlib
 
-canvas = pyegui.FigureCanvas()
+canvas = eguiplotlib.FigureCanvas()
 
 fig1 = canvas.add_figure("plot set 1", 1, 2)
 fig2 = canvas.add_figure("plot set 2", 2, 2)
