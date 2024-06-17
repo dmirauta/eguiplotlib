@@ -1,11 +1,7 @@
 use egui::{Context, ScrollArea};
 use egui_inspect::EguiInspect;
 use egui_plot::{Line, PlotPoints};
-use pyo3::{
-    exceptions::PyIndexError,
-    prelude::*,
-    types::{PyInt, PyList},
-};
+use pyo3::{exceptions::PyIndexError, prelude::*};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -116,8 +112,10 @@ impl EguiInspect for Figure {
     }
 }
 
+type FigureStoreRef = Arc<Mutex<HashMap<String, Figure>>>;
+
 struct PlotsWindow {
-    figs: Arc<Mutex<HashMap<String, Figure>>>,
+    figs: FigureStoreRef,
 }
 
 impl run_native::App for PlotsWindow {
@@ -138,8 +136,6 @@ impl run_native::App for PlotsWindow {
 #[pymodule]
 mod eguiplotlib {
 
-    use pyo3::types::PyString;
-
     use self::run_native::run_native;
 
     use super::*;
@@ -147,20 +143,34 @@ mod eguiplotlib {
     #[pyclass]
     struct FigureCanvas {
         join_handle: JoinHandle<()>,
-        figs: Arc<Mutex<HashMap<String, Figure>>>,
+        figs: FigureStoreRef,
     }
 
     #[pyclass]
+    #[derive(Clone)]
     struct FigHandle {
         // TODO: These will keep figure data alive even when canvas is dropped, make weakrefs?
-        figs: Arc<Mutex<HashMap<String, Figure>>>,
-        figkey: String,
+        store: FigureStoreRef,
+        name: String,
+    }
+
+    impl FigHandle {
+        fn with_mut_ref<F, R>(&self, func: F) -> PyResult<R>
+        where
+            F: FnOnce(&mut Figure) -> R,
+        {
+            match self.store.lock() {
+                Ok(mut figs) => Ok(func(figs.get_mut(&self.name).unwrap())),
+                Err(_) => Err(PyErr::new::<PyIndexError, _>(format!(
+                    "Handle no longer valid.",
+                ))),
+            }
+        }
     }
 
     #[pyclass]
     struct PlotHandle {
-        figs: Arc<Mutex<HashMap<String, Figure>>>,
-        figkey: String,
+        fig: FigHandle,
         row: usize,
         col: usize,
     }
@@ -180,23 +190,14 @@ mod eguiplotlib {
             !self_.join_handle.is_finished()
         }
 
-        fn add_figure(
-            self_: PyRef<'_, Self>,
-            s: Bound<'_, PyString>,
-            n: Bound<'_, PyInt>,
-            m: Bound<'_, PyInt>,
-        ) -> PyResult<FigHandle> {
-            let s: String = s.extract()?;
-            let n: usize = n.extract()?;
-            let m: usize = m.extract()?;
-            {
-                let mut figs = self_.figs.lock().unwrap();
-                let fig = Figure::new(n, m);
-                figs.insert(s.clone(), fig);
-            }
+        #[pyo3(signature = (name, nrows=1, ncols=1))]
+        fn add_figure(&self, name: String, nrows: usize, ncols: usize) -> PyResult<FigHandle> {
+            let mut figs = self.figs.lock().unwrap();
+            let fig = Figure::new(nrows, ncols);
+            figs.insert(name.clone(), fig);
             Ok(FigHandle {
-                figkey: s,
-                figs: self_.figs.clone(),
+                store: self.figs.clone(),
+                name,
             })
         }
     }
@@ -204,74 +205,45 @@ mod eguiplotlib {
     #[pymethods]
     impl FigHandle {
         /// Aquire a handle to the plot at grid coords (i, j).
-        fn plot(
-            self_: PyRef<'_, Self>,
-            i: Bound<'_, PyInt>,
-            j: Bound<'_, PyInt>,
-        ) -> PyResult<PlotHandle> {
-            let i: usize = i.extract()?;
-            let j: usize = j.extract()?;
-            match self_.figs.lock() {
-                Ok(mut figs) => {
-                    let fig = figs.get_mut(&self_.figkey).unwrap();
-                    let n = fig.plot_rows.len();
-                    let pr = fig
-                        .plot_rows
-                        .get_mut(i)
-                        .ok_or(PyErr::new::<PyIndexError, _>(format!(
-                            "Index {i} invalid for rows {n}.",
-                        )))?;
-                    let m = pr.plots.len();
-                    let _ = pr
-                        .plots
-                        .get_mut(j)
-                        .ok_or(PyErr::new::<PyIndexError, _>(format!(
-                            "Index {j} invalid for {m} plots in row.",
-                        )))?;
-                    Ok(PlotHandle {
-                        figs: self_.figs.clone(),
-                        figkey: self_.figkey.clone(),
-                        row: i,
-                        col: j,
-                    })
-                }
-                Err(_) => Err(PyErr::new::<PyIndexError, _>(format!(
-                    "Handle no longer valid.",
-                ))),
-            }
+        #[pyo3(signature = (row=0, col=0))]
+        fn plot(&self, row: usize, col: usize) -> PyResult<PlotHandle> {
+            self.with_mut_ref(|fig| {
+                let n = fig.plot_rows.len();
+                let pr = fig
+                    .plot_rows
+                    .get_mut(row)
+                    .ok_or(PyErr::new::<PyIndexError, _>(format!(
+                        "Index {row} invalid for {n} rows.",
+                    )))?;
+                let m = pr.plots.len();
+                let _ = pr
+                    .plots
+                    .get_mut(col)
+                    .ok_or(PyErr::new::<PyIndexError, _>(format!(
+                        "Index {col} invalid for {m} plots in row.",
+                    )))?;
+                Ok(PlotHandle {
+                    fig: self.clone(),
+                    row,
+                    col,
+                })
+            })?
         }
     }
 
     #[pymethods]
     impl PlotHandle {
-        fn add_line(
-            self_: PyRef<'_, Self>,
-            x: Bound<'_, PyList>,
-            y: Bound<'_, PyList>,
-        ) -> PyResult<()> {
+        fn add_line(&self, x: Vec<f64>, y: Vec<f64>) -> PyResult<()> {
+            // TODO: Accept iterator or list?
             let xy_data = x
-                .iter()
-                .zip(y.iter())
-                .filter_map(|(xf, yf)| match (xf.extract(), yf.extract()) {
-                    (Ok(x), Ok(y)) => Some([x, y]),
-                    _ => None,
-                })
+                .into_iter()
+                .zip(y.into_iter())
+                .map(|(xf, yf)| [xf, yf])
                 .collect();
-            match self_.figs.lock() {
-                Ok(mut figs) => match figs.get_mut(&self_.figkey) {
-                    Some(fig) => {
-                        let p = &mut fig.plot_rows[self_.row].plots[self_.col];
-                        p.add_line(xy_data)
-                    }
-                    None => Err(PyErr::new::<PyIndexError, _>(format!(
-                        "No figure with key \"{}\", handle is old?",
-                        self_.figkey
-                    ))),
-                },
-                Err(_) => Err(PyErr::new::<PyIndexError, _>(format!(
-                    "Handle no longer valid.",
-                ))),
-            }
+            self.fig.with_mut_ref(|fig| {
+                let p = &mut fig.plot_rows[self.row].plots[self.col];
+                p.add_line(xy_data)
+            })?
             // TODO: Signal request repaint on modification?
         }
     }

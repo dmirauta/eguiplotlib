@@ -1,3 +1,6 @@
+//! Draws egui app using sdl2
+//! https://github.com/ArjunNair/egui_sdl2_gl/blob/main/examples/demo_lib.rs
+
 use egui::ViewportId;
 use egui_backend::{
     egui::{self, FullOutput},
