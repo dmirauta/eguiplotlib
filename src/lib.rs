@@ -133,6 +133,7 @@ impl run_native::App for PlotsWindow {
     }
 }
 
+/// A matplotlib style plotting library through egui
 #[pymodule]
 mod eguiplotlib {
 
@@ -186,10 +187,12 @@ mod eguiplotlib {
             Ok(Self { join_handle, figs })
         }
 
+        /// Check if egui canvas window is still open.
         fn is_running(self_: PyRef<'_, Self>) -> bool {
             !self_.join_handle.is_finished()
         }
 
+        /// Add a figure containing a grid of plots to the canvas.
         #[pyo3(signature = (name, nrows=1, ncols=1))]
         fn add_figure(&self, name: String, nrows: usize, ncols: usize) -> PyResult<FigHandle> {
             let mut figs = self.figs.lock().unwrap();
@@ -233,6 +236,7 @@ mod eguiplotlib {
 
     #[pymethods]
     impl PlotHandle {
+        /// Add a line to this plot.
         fn add_line(&self, x: Vec<f64>, y: Vec<f64>) -> PyResult<()> {
             // TODO: Accept iterator or list?
             let xy_data = x
