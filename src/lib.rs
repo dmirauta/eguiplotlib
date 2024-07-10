@@ -141,6 +141,7 @@ mod eguiplotlib {
 
     use super::*;
 
+    /// Holds the egui window in which floating figures can be added.
     #[pyclass]
     struct FigureCanvas {
         join_handle: JoinHandle<()>,

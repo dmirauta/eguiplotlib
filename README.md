@@ -4,6 +4,4 @@ Proof of concept (extremely bare-bones), pyo3/egui line plotter, in the style of
 
 ![](resources/example.png)
 
-To build and generate stub, run `cargo b -r && python mystubgen.py eguiplotlib`.
-
-To use, symlink the produced cdylib `ln -s $CARGO_TARGET_DIR/release/libeguiplotlib.so eguiplotlib.so` to a directory with a python script in it, from which it will then be available for import with `import eguiplotlib`.
+Build with `maturin develop`.

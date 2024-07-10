@@ -1058,7 +1058,7 @@ dependencies = [
 [[package]]
 name = "egui_inspect"
 version = "0.1.4"
-source = "git+https://github.com/dmirauta/egui_inspect#78accebebd29dab943b48cd35d4aadcd969f2d6a"
+source = "git+https://github.com/dmirauta/egui_inspect?branch=0_27#78accebebd29dab943b48cd35d4aadcd969f2d6a"
 dependencies = [
  "eframe",
  "egui 0.27.2",
@@ -1068,7 +1068,7 @@ dependencies = [
 [[package]]
 name = "egui_inspect_derive"
 version = "0.1.4"
-source = "git+https://github.com/dmirauta/egui_inspect#78accebebd29dab943b48cd35d4aadcd969f2d6a"
+source = "git+https://github.com/dmirauta/egui_inspect?branch=0_27#78accebebd29dab943b48cd35d4aadcd969f2d6a"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -3380,7 +3380,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading 0.8.3",
+ "libloading 0.7.4",
  "log",
  "metal",
  "naga",
